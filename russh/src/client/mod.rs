@@ -40,6 +40,7 @@ use std::convert::TryInto;
 use std::num::Wrapping;
 use std::pin::Pin;
 use std::sync::Arc;
+use std::time::Duration;
 
 use async_trait::async_trait;
 use futures::task::{Context, Poll};
@@ -714,8 +715,10 @@ pub async fn connect<H: Handler + Send + 'static, A: ToSocketAddrs>(
     addrs: A,
     handler: H,
 ) -> Result<Handle<H>, H::Error> {
-    let socket = TcpStream::connect(addrs)
+    let connect_timeout = config.connect_timeout.unwrap_or(Duration::MAX);
+    let socket = tokio::time::timeout(connect_timeout, TcpStream::connect(addrs))
         .await
+        .map_err(|_| crate::Error::ConnectionTimeout)?
         .map_err(crate::Error::from)?;
     connect_stream(config, socket, handler).await
 }
@@ -736,9 +739,10 @@ where
     // Writing SSH id.
     let mut write_buffer = SSHBuffer::new();
     write_buffer.send_ssh_id(&config.as_ref().client_id);
-    stream
-        .write_all(&write_buffer.buffer)
+    let write_timeout = config.write_timeout.unwrap_or(Duration::MAX);
+    tokio::time::timeout(write_timeout, stream.write_all(&write_buffer.buffer))
         .await
+        .map_err(|_| crate::Error::SendError)?
         .map_err(crate::Error::from)?;
 
     // Reading SSH id and allocating a session if correct.
@@ -879,13 +883,17 @@ impl Session {
     ) -> Result<RemoteDisconnectInfo, H::Error> {
         let mut result: Result<RemoteDisconnectInfo, H::Error> =
             Err(crate::Error::Disconnect.into());
+        let write_timeout = self.common.config.write_timeout.unwrap_or(Duration::MAX);
         self.flush()?;
         if !self.common.write_buffer.buffer.is_empty() {
             debug!("writing {:?} bytes", self.common.write_buffer.buffer.len());
-            stream_write
-                .write_all(&self.common.write_buffer.buffer)
-                .await
-                .map_err(crate::Error::from)?;
+            tokio::time::timeout(
+                write_timeout,
+                stream_write.write_all(&self.common.write_buffer.buffer),
+            )
+            .await
+            .map_err(|_| crate::Error::SendError)?
+            .map_err(crate::Error::from)?;
             stream_write.flush().await.map_err(crate::Error::from)?;
         }
         self.common.write_buffer.buffer.clear();
@@ -1004,10 +1012,13 @@ impl Session {
                     "writing to stream: {:?} bytes",
                     self.common.write_buffer.buffer.len()
                 );
-                stream_write
-                    .write_all(&self.common.write_buffer.buffer)
-                    .await
-                    .map_err(crate::Error::from)?;
+                tokio::time::timeout(
+                    write_timeout,
+                    stream_write.write_all(&self.common.write_buffer.buffer),
+                )
+                .await
+                .map_err(|_| crate::Error::SendError)?
+                .map_err(crate::Error::from)?;
                 stream_write.flush().await.map_err(crate::Error::from)?;
             }
             self.common.write_buffer.buffer.clear();
@@ -1485,6 +1496,12 @@ pub struct Config {
     pub maximum_packet_size: u32,
     /// Lists of preferred algorithms.
     pub preferred: negotiation::Preferred,
+    /// The time to wait for the connection to be established.
+    pub connect_timeout: Option<std::time::Duration>,
+    /// The time to wait for a message to be received.
+    pub read_timeout: Option<std::time::Duration>,
+    /// The time to wait for a message to be sent.
+    pub write_timeout: Option<std::time::Duration>,
     /// Time after which the connection is garbage-collected.
     pub inactivity_timeout: Option<std::time::Duration>,
     /// If nothing is received from the server for this amount of time, send a keepalive message.
@@ -1507,6 +1524,9 @@ impl Default for Config {
             window_size: 2097152,
             maximum_packet_size: 32768,
             preferred: Default::default(),
+            connect_timeout: None,
+            read_timeout: None,
+            write_timeout: None,
             inactivity_timeout: None,
             keepalive_interval: None,
             keepalive_max: 3,
