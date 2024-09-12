@@ -1484,7 +1484,7 @@ fn initial_encrypted_state(session: &Session) -> EncryptedState {
 }
 
 /// The configuration of clients.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Config {
     /// The client ID string sent at the beginning of the protocol.
     pub client_id: SshId,
