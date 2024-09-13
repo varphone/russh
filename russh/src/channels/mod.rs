@@ -121,6 +121,7 @@ pub struct Channel<Send: From<(ChannelId, ChannelMsg)>> {
     pub(crate) receiver: UnboundedReceiver<ChannelMsg>,
     pub(crate) max_packet_size: u32,
     pub(crate) window_size: Arc<Mutex<u32>>,
+    pub(crate) write_timeout: Option<std::time::Duration>,
 }
 
 impl<T: From<(ChannelId, ChannelMsg)>> std::fmt::Debug for Channel<T> {
@@ -146,12 +147,20 @@ impl<S: From<(ChannelId, ChannelMsg)> + Send + Sync + 'static> Channel<S> {
                 receiver: rx,
                 max_packet_size,
                 window_size: window_size.clone(),
+                write_timeout: None,
             },
             ChannelRef {
                 sender: tx,
                 window_size,
             },
         )
+    }
+
+    /// Set a write timeout for the channel. If the timeout is reached
+    /// while writing to the channel, the write operation will return
+    /// an error.
+    pub fn set_write_timeout(&mut self, timeout: std::time::Duration) {
+        self.write_timeout = Some(timeout);
     }
 
     /// Returns the min between the maximum packet size and the
@@ -340,6 +349,7 @@ impl<S: From<(ChannelId, ChannelMsg)> + Send + Sync + 'static> Channel<S> {
                 self.window_size.clone(),
                 self.max_packet_size,
                 None,
+                self.write_timeout,
             ),
             io::ChannelRx::new(self, None),
         )
@@ -372,6 +382,7 @@ impl<S: From<(ChannelId, ChannelMsg)> + Send + Sync + 'static> Channel<S> {
             self.window_size.clone(),
             self.max_packet_size,
             ext,
+            self.write_timeout,
         )
     }
 }
