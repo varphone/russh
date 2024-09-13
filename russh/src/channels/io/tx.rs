@@ -2,12 +2,14 @@ use std::io;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::task::{ready, Context, Poll};
+use std::time::Duration;
 
-use futures::FutureExt;
+use futures::{Future, FutureExt};
 use tokio::io::AsyncWrite;
 use tokio::sync::mpsc::error::SendError;
 use tokio::sync::mpsc::{self, OwnedPermit};
 use tokio::sync::{Mutex, OwnedMutexGuard};
+use tokio::time::{Instant, Sleep};
 
 use super::ChannelMsg;
 use crate::{ChannelId, CryptoVec};
@@ -25,6 +27,10 @@ pub struct ChannelTx<S> {
     window_size: Arc<Mutex<u32>>,
     max_packet_size: u32,
     ext: Option<u32>,
+
+    busy_start: Option<Instant>,
+    busy_waiter: Pin<Box<Sleep>>,
+    write_timeout: Option<Duration>,
 }
 
 impl<S> ChannelTx<S>
@@ -37,6 +43,7 @@ where
         window_size: Arc<Mutex<u32>>,
         max_packet_size: u32,
         ext: Option<u32>,
+        write_timeout: Option<Duration>,
     ) -> Self {
         Self {
             sender,
@@ -46,6 +53,9 @@ where
             window_size_fut: None,
             max_packet_size,
             ext,
+            busy_start: None,
+            busy_waiter: Box::into_pin(Box::new(tokio::time::sleep(Duration::from_millis(1)))),
+            write_timeout,
         }
     }
 
@@ -61,10 +71,24 @@ where
             .min(*window_size)
             .min(buf.len() as u32) as usize;
         if writable == 0 {
-            // TODO fix this busywait
-            cx.waker().wake_by_ref();
+            if self.busy_start.is_none() {
+                self.busy_start = Some(Instant::now());
+            }
+            if let Some((started, timeout)) = self.busy_start.zip(self.write_timeout) {
+                if Instant::now() - started > timeout {
+                    log::debug!("ChannelTx::poll_mk_msg Eof");
+                    return Poll::Ready((ChannelMsg::Eof, 0));
+                }
+            }
+            ready!(self.busy_waiter.as_mut().poll(cx));
+            self.busy_waiter
+                .as_mut()
+                .reset(Instant::now() + Duration::from_millis(1));
             return Poll::Pending;
         }
+
+        self.busy_start = None;
+
         let mut data = CryptoVec::new_zeroed(writable);
         #[allow(clippy::indexing_slicing)] // Clamped to maximum `buf.len()` with `.min`
         data.copy_from_slice(&buf[..writable]);

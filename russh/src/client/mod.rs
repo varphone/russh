@@ -446,6 +446,7 @@ impl<H: Handler> Handle<H> {
                         receiver,
                         max_packet_size,
                         window_size: window_size_ref,
+                        write_timeout: None,
                     });
                 }
                 Some(ChannelMsg::OpenFailure(reason)) => {
