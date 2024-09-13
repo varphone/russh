@@ -632,12 +632,12 @@ impl Session {
                 }
             }
             Some(&msg::CHANNEL_WINDOW_ADJUST) => {
-                debug!("channel_window_adjust");
+                trace!("channel_window_adjust");
                 let mut r = buf.reader(1);
                 let channel_num = ChannelId(r.read_u32().map_err(crate::Error::from)?);
                 let amount = r.read_u32().map_err(crate::Error::from)?;
                 let mut new_size = 0;
-                debug!("amount: {:?}", amount);
+                trace!("amount: {:?}", amount);
                 if let Some(ref mut enc) = self.common.encrypted {
                     if let Some(ref mut channel) = enc.channels.get_mut(&channel_num) {
                         channel.recipient_window_size += amount;
