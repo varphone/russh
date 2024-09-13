@@ -29,6 +29,7 @@ pub struct ChannelTx<S> {
     ext: Option<u32>,
 
     busy_start: Option<Instant>,
+    busy_times: u32,
     busy_waiter: Pin<Box<Sleep>>,
     write_timeout: Option<Duration>,
 }
@@ -54,6 +55,7 @@ where
             max_packet_size,
             ext,
             busy_start: None,
+            busy_times: 0,
             busy_waiter: Box::into_pin(Box::new(tokio::time::sleep(Duration::from_millis(1)))),
             write_timeout,
         }
@@ -71,6 +73,7 @@ where
             .min(*window_size)
             .min(buf.len() as u32) as usize;
         if writable == 0 {
+            self.busy_times += 1;
             if self.busy_start.is_none() {
                 self.busy_start = Some(Instant::now());
             }
@@ -80,14 +83,19 @@ where
                     return Poll::Ready((ChannelMsg::Eof, 0));
                 }
             }
-            ready!(self.busy_waiter.as_mut().poll(cx));
-            self.busy_waiter
-                .as_mut()
-                .reset(Instant::now() + Duration::from_millis(1));
+            if self.busy_times > 5 {
+                ready!(self.busy_waiter.as_mut().poll(cx));
+                self.busy_waiter
+                    .as_mut()
+                    .reset(Instant::now() + Duration::from_millis(1));
+            } else {
+                cx.waker().wake_by_ref();
+            }
             return Poll::Pending;
         }
 
         self.busy_start = None;
+        self.busy_times = 0;
 
         let mut data = CryptoVec::new_zeroed(writable);
         #[allow(clippy::indexing_slicing)] // Clamped to maximum `buf.len()` with `.min`
